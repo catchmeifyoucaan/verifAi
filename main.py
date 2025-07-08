@@ -3,9 +3,27 @@ from pydantic import BaseModel
 import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 import os
+# --- NEW: Import CORS middleware ---
+from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the FastAPI app
 app = FastAPI()
+
+# --- NEW: Add CORS Middleware ---
+# This allows your frontend (running on a different domain) to communicate
+# with this backend. This is a critical fix for web applications.
+origins = [
+    "*"  # Allows all origins for simplicity. For production, you'd list specific domains.
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- FIX: Define a simple class for our dummy model instead of a lambda ---
 class DummyModel:
@@ -42,7 +60,7 @@ def load_model():
 
 # --- API Data Models ---
 class VerificationRequest(BaseModel):
-    image: str  # We won't use the image data yet, but it's in the contract
+    image: str
     object_class: str
 
 class VerificationResponse(BaseModel):
@@ -57,20 +75,19 @@ class VerificationResponse(BaseModel):
 def verify_item(request: VerificationRequest):
     try:
         # Simulate feature extraction from the object class
-        # A real model would use features from the image itself.
         features = vectorizer.transform([request.object_class])
-
+        
         # Get a prediction from our loaded model
         prediction = model.predict(features)
         predicted_label = prediction[0]
-
+        
         print(f"Received request for '{request.object_class}'. Prediction: '{predicted_label}'")
 
         # Create a response based on the prediction
         return {
             "status": "verified" if predicted_label == "authentic" else "warning",
             "title": f"Live Verification for {request.object_class.title()}",
-            "confidence": 0.93, # Using a static confidence for this example
+            "confidence": 0.93,
             "summary": f"Self-hosted AI model predicted this item is {predicted_label}.",
             "details": [
                 {"agent": "Render-Hosted Model", "finding": f"Prediction output: {predicted_label}", "status": "success"}
