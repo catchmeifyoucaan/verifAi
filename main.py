@@ -1,11 +1,17 @@
 # FIX: Ensure all necessary imports are at the top of the file.
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
 import os
 from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
+import base64
+import io
+from PIL import Image
+import json
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
 # Initialize the FastAPI app
 app = FastAPI()
@@ -20,43 +26,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Define a proper class for the model so joblib can save it ---
-class SerializableMockModel:
-    def predict(self, features):
-        # This mock model will always predict "authentic"
-        return ["authentic"]
+# --- Configure Gemini API ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set.")
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel('gemini-pro-vision')
 
-# --- AI Model Loading ---
-model = None
-vectorizer = None
+# --- Helper function to decode base64 image ---
+def decode_image(base64_string: str):
+    try:
+        # Remove data:image/jpeg;base64, prefix if present
+        header, encoded = base64_string.split(",", 1)
+        image_data = base64.b64decode(encoded)
+        return Image.open(io.BytesIO(image_data))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
 
-@app.on_event("startup")
-def load_model():
-    """
-    Instantiates and loads the AI model and vectorizer when the server starts.
-    If the model files don't exist, it creates them.
-    """
-    global model, vectorizer
-    model_filename = "verifai_model.joblib"
-    vectorizer_filename = "verifai_vectorizer.joblib"
 
-    if not os.path.exists(model_filename):
-        print("--- Creating placeholder model files for first run... ---")
 
-        # Create and save a TfidfVectorizer
-        dummy_vectorizer = TfidfVectorizer()
-        dummy_vectorizer.fit_transform(["authentic", "counterfeit"])
-        joblib.dump(dummy_vectorizer, vectorizer_filename)
 
-        # Create and save an instance of our serializable model class
-        serializable_model = SerializableMockModel()
-        joblib.dump(serializable_model, model_filename)
-        print("--- Placeholder files created. ---")
-
-    print("--- Loading model and vectorizer... ---")
-    model = joblib.load(model_filename)
-    vectorizer = joblib.load(vectorizer_filename)
-    print("--- Model and vectorizer loaded successfully. ---")
 
 
 # --- API Data Models ---
@@ -73,31 +62,57 @@ class VerificationResponse(BaseModel):
 
 # --- API Endpoint ---
 @app.post("/verify", response_model=VerificationResponse)
-def verify_item(request: VerificationRequest):
+async def verify_item(request: VerificationRequest):
     print(f"--- Received API request for: {request.object_class} ---")
-    if not model or not vectorizer:
-        print("[ERROR] AI Model or vectorizer is not loaded.")
-        raise HTTPException(status_code=500, detail="AI model is not available.")
 
     try:
-        # Use the loaded vectorizer and model
-        features = vectorizer.transform([request.object_class])
-        prediction = model.predict(features)
-        predicted_label = prediction[0]
+        # Decode the image
+        image = decode_image(request.image)
 
-        print(f"--- Prediction successful. Result: {predicted_label} ---")
+        # Construct prompt for Gemini
+        prompt = [
+            f"Analyze this image of a {request.object_class}. Determine if it appears authentic or counterfeit. "
+            "Provide a detailed explanation of your reasoning, highlighting specific features that support your conclusion. "
+            "Consider aspects like logos, stitching, material quality, and any visible serial numbers or tags. "
+            "If you cannot determine authenticity, state why. "
+            "Format your response as a JSON object with the following keys: "
+            "\"status\": (\"verified\", \"warning\", or \"danger\"), "
+            "\"title\": (a concise title), "
+            "\"confidence\": (a float between 0.0 and 100.0), "
+            "\"summary\": (a brief summary of the finding), "
+            "\"details\": (a list of objects, each with \"agent\", \"finding\", and \"status\": (\"success\" or \"fail\"))."
+        ]
 
-        return {
-            "status": "verified" if predicted_label == "authentic" else "warning",
-            "title": f"Live Verification for {request.object_class.title()}",
-            "confidence": 93.0,
-            "summary": f"Self-hosted AI model predicted this item is {predicted_label}.",
-            "details": [
-                {"agent": "Render-Hosted Model v3", "finding": f"Prediction output: {predicted_label}", "status": "success"}
-            ]
-        }
+        # Call Gemini Vision API
+        response = gemini_model.generate_content(prompt + [image])
+        
+        # Extract JSON from Gemini's response
+        gemini_output = response.text.strip()
+        
+        # Attempt to parse the JSON. Gemini might sometimes include markdown.
+        if gemini_output.startswith("```json"):
+            gemini_output = gemini_output[len("```json"):].strip()
+        if gemini_output.endswith("```"):
+            gemini_output = gemini_output[:-len("```")].strip()
+
+        verification_result = json.loads(gemini_output)
+
+        # Validate the structure of Gemini's response
+        if not all(k in verification_result for k in ["status", "title", "confidence", "summary", "details"]):
+            raise ValueError("Gemini response missing required fields.")
+
+        print(f"--- Gemini verification successful. Status: {verification_result['status']} ---")
+
+        return VerificationResponse(**verification_result)
+
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Gemini response was not valid JSON: {e}\nResponse: {gemini_output}")
+        raise HTTPException(status_code=500, detail="AI analysis returned malformed data. Please try again.")
+    except ValueError as e:
+        print(f"[ERROR] Invalid Gemini response structure: {e}")
+        raise HTTPException(status_code=500, detail="AI analysis returned unexpected data structure. Please try again.")
     except Exception as e:
-        print(f"[ERROR] An exception occurred during prediction: {e}")
+        print(f"[ERROR] An exception occurred during verification: {e}")
         raise HTTPException(status_code=500, detail="An internal error occurred during AI analysis.")
 
 @app.get("/")
