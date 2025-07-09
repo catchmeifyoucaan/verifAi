@@ -1,3 +1,12 @@
+# FIX: Ensure all necessary imports are at the top of the file.
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import joblib
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+import os
+from fastapi.middleware.cors import CORSMiddleware
+
 # Initialize the FastAPI app
 app = FastAPI()
 
@@ -11,56 +20,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- UPGRADED AI LOGIC ---
-# The model now has a dictionary of predefined responses for different objects.
-class SmartMockModel:
-    MOCK_RESPONSES = {
-        "person": {
-            "status": "verified",
-            "confidence": 98.6,
-            "summary": "Biometric scan matches. Identity verified.",
-            "agent": "Identity Verification Agent"
-        },
-        "bottle": {
-            "status": "verified",
-            "confidence": 99.2,
-            "summary": "Seal is intact. Batch number is valid.",
-            "agent": "Consumable Safety Agent"
-        },
-        "cup": {
-            "status": "verified",
-            "confidence": 99.5,
-            "summary": "Material analysis complete. Safe for use.",
-            "agent": "Consumable Safety Agent"
-        },
-        "tv": {
-            "status": "warning",
-            "confidence": 85.1,
-            "summary": "Serial number does not match manufacturer records for this region.",
-            "agent": "Electronics Authenticity Agent"
-        },
-        "default": {
-            "status": "warning",
-            "confidence": 75.0,
-            "summary": "Object class not recognized in our high-confidence database.",
-            "agent": "General Object Agent"
-        }
-    }
+# --- Define a proper class for the model so joblib can save it ---
+class SerializableMockModel:
+    def predict(self, features):
+        # This mock model will always predict "authentic"
+        return ["authentic"]
 
-    def predict(self, object_class: str) -> dict:
-        print(f"--- Model: Predicting for class '{object_class}' ---")
-        # Return the specific response for the class, or the default one
-        return self.MOCK_RESPONSES.get(object_class, self.MOCK_RESPONSES["default"])
-
-ai_model = None
+# --- AI Model Loading ---
+model = None
+vectorizer = None
 
 @app.on_event("startup")
 def load_model():
-    """Instantiates our smart model when the server starts."""
-    global ai_model
-    print("--- Server starting up: Instantiating Smart AI model. ---")
-    ai_model = SmartMockModel()
-    print("--- Smart AI model is ready. ---")
+    """
+    Instantiates and loads the AI model and vectorizer when the server starts.
+    If the model files don't exist, it creates them.
+    """
+    global model, vectorizer
+    model_filename = "verifai_model.joblib"
+    vectorizer_filename = "verifai_vectorizer.joblib"
+
+    if not os.path.exists(model_filename):
+        print("--- Creating placeholder model files for first run... ---")
+
+        # Create and save a TfidfVectorizer
+        dummy_vectorizer = TfidfVectorizer()
+        dummy_vectorizer.fit_transform(["authentic", "counterfeit"])
+        joblib.dump(dummy_vectorizer, vectorizer_filename)
+
+        # Create and save an instance of our serializable model class
+        serializable_model = SerializableMockModel()
+        joblib.dump(serializable_model, model_filename)
+        print("--- Placeholder files created. ---")
+
+    print("--- Loading model and vectorizer... ---")
+    model = joblib.load(model_filename)
+    vectorizer = joblib.load(vectorizer_filename)
+    print("--- Model and vectorizer loaded successfully. ---")
 
 
 # --- API Data Models ---
@@ -79,22 +75,25 @@ class VerificationResponse(BaseModel):
 @app.post("/verify", response_model=VerificationResponse)
 def verify_item(request: VerificationRequest):
     print(f"--- Received API request for: {request.object_class} ---")
-    if not ai_model:
+    if not model or not vectorizer:
+        print("[ERROR] AI Model or vectorizer is not loaded.")
         raise HTTPException(status_code=500, detail="AI model is not available.")
 
     try:
-        # Get a full prediction dictionary from our model
-        prediction = ai_model.predict(request.object_class)
-        print(f"--- Prediction successful. Result: {prediction} ---")
+        # Use the loaded vectorizer and model
+        features = vectorizer.transform([request.object_class])
+        prediction = model.predict(features)
+        predicted_label = prediction[0]
 
-        # Create a response using the data from the prediction
+        print(f"--- Prediction successful. Result: {predicted_label} ---")
+
         return {
-            "status": prediction["status"],
+            "status": "verified" if predicted_label == "authentic" else "warning",
             "title": f"Live Verification for {request.object_class.title()}",
-            "confidence": prediction["confidence"], # FIX: Confidence is now correct
-            "summary": prediction["summary"],
+            "confidence": 93.0,
+            "summary": f"Self-hosted AI model predicted this item is {predicted_label}.",
             "details": [
-                {"agent": prediction["agent"], "finding": f"Prediction status: {prediction['status']}", "status": "success"}
+                {"agent": "Render-Hosted Model v3", "finding": f"Prediction output: {predicted_label}", "status": "success"}
             ]
         }
     except Exception as e:
@@ -103,4 +102,4 @@ def verify_item(request: VerificationRequest):
 
 @app.get("/")
 def read_root():
-    return {"message": "VerifAi Backend v1.4 (Smarter Logic) is running."}
+    return {"message": "VerifAi Backend v1.2 (scikit-learn compatible) is running."}
