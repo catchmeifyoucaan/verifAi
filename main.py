@@ -1,8 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
 import os
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,7 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
 
 # --- Add CORS Middleware ---
-origins = ["*"]
+# This allows your frontend to reliably communicate with this backend.
+origins = ["*"] # Allows all origins for simplicity
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -19,44 +18,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- FIX: Define a proper class for the model so joblib can save it ---
-# This class mimics the structure of a scikit-learn model.
-class SerializableMockModel:
-    def predict(self, features):
-        # This mock model will always predict "authentic"
-        return ["authentic"]
+# --- A simple, pure Python mock model ---
+# This removes the dependency on heavy libraries like scikit-learn.
+class SimpleMockModel:
+    def predict(self, object_class: str) -> str:
+        print(f"--- Model: Predicting for class '{object_class}' ---")
+        if "bottle" in object_class or "cup" in object_class:
+            return "verified"
+        else:
+            return "warning"
 
-# --- AI Model Loading ---
-model = None
-vectorizer = None
+ai_model = None
 
 @app.on_event("startup")
 def load_model():
-    """
-    Instantiates and loads the AI model and vectorizer when the server starts.
-    If the model files don't exist, it creates them.
-    """
-    global model, vectorizer
-    model_filename = "verifai_model.joblib"
-    vectorizer_filename = "verifai_vectorizer.joblib"
-
-    if not os.path.exists(model_filename):
-        print("--- Creating placeholder model files for first run... ---")
-
-        # Create and save a TfidfVectorizer
-        dummy_vectorizer = TfidfVectorizer()
-        dummy_vectorizer.fit_transform(["authentic", "counterfeit"])
-        joblib.dump(dummy_vectorizer, vectorizer_filename)
-
-        # Create and save an instance of our serializable model class
-        serializable_model = SerializableMockModel()
-        joblib.dump(serializable_model, model_filename)
-        print("--- Placeholder files created. ---")
-
-    print("--- Loading model and vectorizer... ---")
-    model = joblib.load(model_filename)
-    vectorizer = joblib.load(vectorizer_filename)
-    print("--- Model and vectorizer loaded successfully. ---")
+    """Instantiates our simple model when the server starts."""
+    global ai_model
+    print("--- Server starting up: Instantiating AI model. ---")
+    ai_model = SimpleMockModel()
+    print("--- AI model is ready. ---")
 
 
 # --- API Data Models ---
@@ -75,25 +55,23 @@ class VerificationResponse(BaseModel):
 @app.post("/verify", response_model=VerificationResponse)
 def verify_item(request: VerificationRequest):
     print(f"--- Received API request for: {request.object_class} ---")
-    if not model or not vectorizer:
-        print("[ERROR] AI Model or vectorizer is not loaded.")
+    if not ai_model:
+        print("[ERROR] AI Model is not loaded.")
         raise HTTPException(status_code=500, detail="AI model is not available.")
 
     try:
-        # Use the loaded vectorizer and model
-        features = vectorizer.transform([request.object_class])
-        prediction = model.predict(features)
-        predicted_label = prediction[0]
-
+        # Get a prediction from our loaded model
+        predicted_label = ai_model.predict(request.object_class)
         print(f"--- Prediction successful. Result: {predicted_label} ---")
 
+        # Create a response based on the prediction
         return {
-            "status": "verified" if predicted_label == "authentic" else "warning",
+            "status": predicted_label,
             "title": f"Live Verification for {request.object_class.title()}",
-            "confidence": 0.93,
-            "summary": f"Self-hosted AI model predicted this item is {predicted_label}.",
+            "confidence": 0.95,
+            "summary": f"Self-hosted AI model returned a '{predicted_label}' status.",
             "details": [
-                {"agent": "Render-Hosted Model v3", "finding": f"Prediction output: {predicted_label}", "status": "success"}
+                {"agent": "Render-Hosted Model v2", "finding": f"Prediction output: {predicted_label}", "status": "success"}
             ]
         }
     except Exception as e:
@@ -102,4 +80,4 @@ def verify_item(request: VerificationRequest):
 
 @app.get("/")
 def read_root():
-    return {"message": "VerifAi Backend v1.2 (scikit-learn compatible) is running."}
+    return {"message": "VerifAi Backend v1.3 (Lightweight) is running."}
