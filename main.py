@@ -1,15 +1,8 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import os
-from fastapi.middleware.cors import CORSMiddleware
-
 # Initialize the FastAPI app
 app = FastAPI()
 
 # --- Add CORS Middleware ---
-# This allows your frontend to reliably communicate with this backend.
-origins = ["*"] # Allows all origins for simplicity
-
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -18,25 +11,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- A simple, pure Python mock model ---
-# This removes the dependency on heavy libraries like scikit-learn.
-class SimpleMockModel:
-    def predict(self, object_class: str) -> str:
+# --- UPGRADED AI LOGIC ---
+# The model now has a dictionary of predefined responses for different objects.
+class SmartMockModel:
+    MOCK_RESPONSES = {
+        "person": {
+            "status": "verified",
+            "confidence": 98.6,
+            "summary": "Biometric scan matches. Identity verified.",
+            "agent": "Identity Verification Agent"
+        },
+        "bottle": {
+            "status": "verified",
+            "confidence": 99.2,
+            "summary": "Seal is intact. Batch number is valid.",
+            "agent": "Consumable Safety Agent"
+        },
+        "cup": {
+            "status": "verified",
+            "confidence": 99.5,
+            "summary": "Material analysis complete. Safe for use.",
+            "agent": "Consumable Safety Agent"
+        },
+        "tv": {
+            "status": "warning",
+            "confidence": 85.1,
+            "summary": "Serial number does not match manufacturer records for this region.",
+            "agent": "Electronics Authenticity Agent"
+        },
+        "default": {
+            "status": "warning",
+            "confidence": 75.0,
+            "summary": "Object class not recognized in our high-confidence database.",
+            "agent": "General Object Agent"
+        }
+    }
+
+    def predict(self, object_class: str) -> dict:
         print(f"--- Model: Predicting for class '{object_class}' ---")
-        if "bottle" in object_class or "cup" in object_class:
-            return "verified"
-        else:
-            return "warning"
+        # Return the specific response for the class, or the default one
+        return self.MOCK_RESPONSES.get(object_class, self.MOCK_RESPONSES["default"])
 
 ai_model = None
 
 @app.on_event("startup")
 def load_model():
-    """Instantiates our simple model when the server starts."""
+    """Instantiates our smart model when the server starts."""
     global ai_model
-    print("--- Server starting up: Instantiating AI model. ---")
-    ai_model = SimpleMockModel()
-    print("--- AI model is ready. ---")
+    print("--- Server starting up: Instantiating Smart AI model. ---")
+    ai_model = SmartMockModel()
+    print("--- Smart AI model is ready. ---")
 
 
 # --- API Data Models ---
@@ -56,22 +80,21 @@ class VerificationResponse(BaseModel):
 def verify_item(request: VerificationRequest):
     print(f"--- Received API request for: {request.object_class} ---")
     if not ai_model:
-        print("[ERROR] AI Model is not loaded.")
         raise HTTPException(status_code=500, detail="AI model is not available.")
 
     try:
-        # Get a prediction from our loaded model
-        predicted_label = ai_model.predict(request.object_class)
-        print(f"--- Prediction successful. Result: {predicted_label} ---")
+        # Get a full prediction dictionary from our model
+        prediction = ai_model.predict(request.object_class)
+        print(f"--- Prediction successful. Result: {prediction} ---")
 
-        # Create a response based on the prediction
+        # Create a response using the data from the prediction
         return {
-            "status": predicted_label,
+            "status": prediction["status"],
             "title": f"Live Verification for {request.object_class.title()}",
-            "confidence": 0.95,
-            "summary": f"Self-hosted AI model returned a '{predicted_label}' status.",
+            "confidence": prediction["confidence"], # FIX: Confidence is now correct
+            "summary": prediction["summary"],
             "details": [
-                {"agent": "Render-Hosted Model v2", "finding": f"Prediction output: {predicted_label}", "status": "success"}
+                {"agent": prediction["agent"], "finding": f"Prediction status: {prediction['status']}", "status": "success"}
             ]
         }
     except Exception as e:
@@ -80,4 +103,4 @@ def verify_item(request: VerificationRequest):
 
 @app.get("/")
 def read_root():
-    return {"message": "VerifAi Backend v1.3 (Lightweight) is running."}
+    return {"message": "VerifAi Backend v1.4 (Smarter Logic) is running."}
