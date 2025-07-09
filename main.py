@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 import base64
 import io
-from pillow import Image
+from PIL import Image
 import json
 
 # Load environment variables
