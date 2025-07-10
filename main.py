@@ -202,7 +202,7 @@ async def verify_item(request: VerificationRequest):
         )
 
         # Call Gemini API asynchronously
-        response = await asyncio.to_thread(gemini_model.generate_content, prompt_parts)
+       response = await gemini_model.generate_content(prompt_parts)
         
         # Extract JSON from Gemini's response
         gemini_output = response.text.strip()
