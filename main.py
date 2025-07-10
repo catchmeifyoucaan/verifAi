@@ -155,7 +155,11 @@ async def verify_item(request: VerificationRequest):
             "\"confidence\": (a float between 0.0 and 100.0), "
             "\"summary\": (a brief summary of the finding), "
             "\"details\": (a list of objects, each with \"agent\", \"finding\", and \"status\": (\"success\" or \"fail\")), "
-            "explanation": (a detailed explanation of the anomaly if status is 'warning' or 'danger', otherwise null),             "remediation": (suggested steps for remediation if status is 'warning' or 'danger', otherwise null),             "liveness_score": (a float between 0.0 and 1.0 indicating liveness, or null),             "spoof_detection_result": (a string indicating spoofing detection outcome, e.g., "live", "spoof", or null).        )
+            "\"explanation\": (a detailed explanation of the anomaly if status is 'warning' or 'danger', otherwise null), "
+            "\"remediation\": (suggested steps for remediation if status is 'warning' or 'danger', otherwise null), "
+            "\"liveness_score\": (a float between 0.0 and 1.0 indicating liveness, or null), "
+            "\"spoof_detection_result\": (a string indicating spoofing detection outcome, e.g., \"live\", \"spoof\", or null)."
+        )
 
         # Call Gemini API
         response = gemini_model.generate_content(prompt_parts)
