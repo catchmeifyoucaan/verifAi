@@ -105,7 +105,7 @@ AGENTS = {
     }
 }
 
-import asyncio
+
 
 # --- API Endpoint ---
 @app.post("/verify", response_model=VerificationResponse)
@@ -202,7 +202,7 @@ async def verify_item(request: VerificationRequest):
         )
 
         # Call Gemini API
-        response = await gemini_model.generate_content(prompt_parts)
+        response = gemini_model.generate_content(prompt_parts)
         
         # Extract JSON from Gemini's response
         gemini_output = response.text.strip()
