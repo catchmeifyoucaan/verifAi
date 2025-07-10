@@ -105,8 +105,6 @@ AGENTS = {
     }
 }
 
-import asyncio
-
 # --- API Endpoint ---
 @app.post("/verify", response_model=VerificationResponse)
 async def verify_item(request: VerificationRequest):
