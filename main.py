@@ -31,27 +31,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-
-# --- Helper function to decode base64 image ---
-def decode_image(base64_string: str):
-    try:
-        # Remove data:image/jpeg;base64, prefix if present
-        header, encoded = base64_string.split(",", 1)
-        image_data = base64.b64decode(encoded)
-        return Image.open(io.BytesIO(image_data))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
-
-
-
-
-
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- API Data Models ---
 class VerificationRequest(BaseModel):
-    image: str
     object_class: str
+    file_type: str | None = None
+    image_data_url: str | None = None
+    media_data_url: str | None = None
+    text_content: str | None = None
+    agent_id: str | None = None  # New field for selecting a specific agent
 
 class VerificationResponse(BaseModel):
     status: str
@@ -59,32 +48,117 @@ class VerificationResponse(BaseModel):
     confidence: float
     summary: str
     details: list
+    explanation: str | None = None  # New field for anomaly explanation
+    remediation: str | None = None  # New field for suggested remediation
+    liveness_score: float | None = None # New field for liveness detection score
+    spoof_detection_result: str | None = None # New field for spoof detection result
+
+class FeedbackRequest(BaseModel):
+    verification_id: str
+    is_helpful: bool
+    user_id: str | None = None
+
+# --- Agent Configurations ---
+AGENTS = {
+    "general_purpose": {
+        "description": "A general-purpose agent for broad authenticity checks.",
+        "prompt_template": (
+            "Analyze this {input_type} of a {object_class}. "
+            "Determine if it appears authentic or counterfeit. "
+            "Provide a detailed explanation of your reasoning, highlighting specific features that support your conclusion. "
+            "Consider aspects like logos, stitching, material quality, and any visible serial numbers or tags. "
+            "If this is a document, perform OCR and analyze for signs of fraud or tampering. "
+            "If you cannot determine authenticity, state why. "
+        )
+    },
+    "id_document_verifier": {
+        "description": "Specialized agent for verifying identity documents.",
+        "prompt_template": (
+            "Analyze this image of an ID document ({object_class}). "
+            "Perform OCR to extract all text. Verify the authenticity of the document, checking for signs of tampering, "
+            "forgery, or inconsistencies in fonts, holograms, and security features. "
+            "Crucially, also analyze for signs of spoofing or presentation attacks (e.g., image of a screen, printed photo, mask). "
+            "Provide a detailed explanation of any anomalies found, including spoofing attempts. "
+            "If you cannot determine authenticity, state why. "
+        )
+    },
+    "product_authenticator": {
+        "description": "Specialized agent for authenticating physical products.",
+        "prompt_template": (
+            "Analyze this {input_type} of a {object_class} (product). "
+            "Focus on brand logos, serial numbers, material quality, stitching, and packaging. "
+            "Determine if it is an authentic product or a counterfeit. "
+            "Provide a detailed explanation of your findings and reasoning. "
+            "If you cannot determine authenticity, state why. "
+        )
+    },
+    "text_analyzer": {
+        "description": "Specialized agent for analyzing textual content.",
+        "prompt_template": (
+            "Analyze this text content related to a {object_class}. "
+            "Determine if it appears authentic, contains anomalies, or exhibits signs of AI generation/plagiarism. "
+            "Provide a detailed explanation of your reasoning, highlighting specific phrases or patterns. "
+            "If you cannot determine authenticity, state why. "
+        )
+    }
+}
 
 # --- API Endpoint ---
 @app.post("/verify", response_model=VerificationResponse)
 async def verify_item(request: VerificationRequest):
-    print(f"--- Received API request for: {request.object_class} ---")
+    print(f"--- Received API request for: {request.object_class} (Type: {request.file_type}, Agent: {request.agent_id}) ---")
 
     try:
-        # Decode the image
-        image = decode_image(request.image)
+        # Determine which agent to use
+        agent_id = request.agent_id if request.agent_id in AGENTS else "general_purpose"
+        selected_agent = AGENTS[agent_id]
+        
+        prompt_template = selected_agent["prompt_template"]
+        
+        prompt_parts = []
+        input_content = None
+        input_type_desc = "data" # Default description for prompt formatting
 
-        # Construct prompt for Gemini
-        prompt = [
-            f"Analyze this image of a {request.object_class}. Determine if it appears authentic or counterfeit. "
-            "Provide a detailed explanation of your reasoning, highlighting specific features that support your conclusion. "
-            "Consider aspects like logos, stitching, material quality, and any visible serial numbers or tags. "
-            "If you cannot determine authenticity, state why. "
+        if request.file_type and request.file_type.startswith("image/") and request.image_data_url:
+            try:
+                header, encoded = request.image_data_url.split(",", 1)
+                image_data = base64.b64decode(encoded)
+                input_content = Image.open(io.BytesIO(image_data))
+                input_type_desc = "image"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
+            
+        elif request.file_type and (request.file_type.startswith("video/") or request.file_type.startswith("audio/")) and request.media_data_url:
+            input_content = {
+                "mime_type": request.file_type,
+                "data": request.media_data_url.split(",", 1)[1] # Get base64 data part
+            }
+            input_type_desc = request.file_type.split("/")[0] # "video" or "audio"
+
+        elif request.file_type and request.file_type.startswith("text/") and request.text_content:
+            input_content = request.text_content
+            input_type_desc = "text content"
+
+        else:
+            raise HTTPException(status_code=400, detail="No valid input data or file type provided.")
+
+        # Format the prompt using the selected agent's template
+        formatted_prompt = prompt_template.format(input_type=input_type_desc, object_class=request.object_class)
+        prompt_parts.append(formatted_prompt)
+        prompt_parts.append(input_content)
+
+        # Add the common JSON formatting instruction
+        prompt_parts.append(
             "Format your response as a JSON object with the following keys: "
             "\"status\": (\"verified\", \"warning\", or \"danger\"), "
             "\"title\": (a concise title), "
             "\"confidence\": (a float between 0.0 and 100.0), "
             "\"summary\": (a brief summary of the finding), "
-            "\"details\": (a list of objects, each with \"agent\", \"finding\", and \"status\": (\"success\" or \"fail\"))."
-        ]
+            "\"details\": (a list of objects, each with \"agent\", \"finding\", and \"status\": (\"success\" or \"fail\")), "
+            "explanation": (a detailed explanation of the anomaly if status is 'warning' or 'danger', otherwise null),             "remediation": (suggested steps for remediation if status is 'warning' or 'danger', otherwise null),             "liveness_score": (a float between 0.0 and 1.0 indicating liveness, or null),             "spoof_detection_result": (a string indicating spoofing detection outcome, e.g., "live", "spoof", or null).        )
 
-        # Call Gemini Vision API
-        response = gemini_model.generate_content(prompt + [image])
+        # Call Gemini API
+        response = gemini_model.generate_content(prompt_parts)
         
         # Extract JSON from Gemini's response
         gemini_output = response.text.strip()
@@ -101,7 +175,7 @@ async def verify_item(request: VerificationRequest):
         if not all(k in verification_result for k in ["status", "title", "confidence", "summary", "details"]):
             raise ValueError("Gemini response missing required fields.")
 
-        print(f"--- Gemini verification successful. Status: {verification_result['status']} ---")
+        print(f"--- Gemini verification successful. Status: {verification_result['status']} (Agent: {agent_id}) ---")
 
         return VerificationResponse(**verification_result)
 
@@ -117,4 +191,11 @@ async def verify_item(request: VerificationRequest):
 
 @app.get("/")
 def read_root():
-    return {"message": "VerifAi Backend v1.2 (scikit-learn compatible) is running."}
+    return {"message": "Welcome to the VerifAi Backend API. Access the interactive API documentation at /docs for details on available endpoints and models."}
+
+@app.post("/feedback")
+async def receive_feedback(feedback: FeedbackRequest):
+    print(f"--- Received feedback for verification {feedback.verification_id}: Helpful={feedback.is_helpful}, User={feedback.user_id} ---")
+    # In a real application, you would store this feedback in a database
+    # and use it for model retraining or analysis.
+    return {"message": "Feedback received successfully!"}
