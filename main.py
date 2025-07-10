@@ -105,6 +105,8 @@ AGENTS = {
     }
 }
 
+import asyncio
+
 # --- API Endpoint ---
 @app.post("/verify", response_model=VerificationResponse)
 async def verify_item(request: VerificationRequest):
@@ -199,8 +201,8 @@ async def verify_item(request: VerificationRequest):
             "\"spoof_detection_result\": (a string indicating spoofing detection outcome, e.g., \"live\", \"spoof\", or null)."
         )
 
-        # Call Gemini API asynchronously
-       response = await gemini_model.generate_content(prompt_parts)
+        # Call Gemini API
+        response = await gemini_model.generate_content(prompt_parts)
         
         # Extract JSON from Gemini's response
         gemini_output = response.text.strip()
