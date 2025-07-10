@@ -8,6 +8,8 @@ import base64
 import io
 from PIL import Image
 import json
+import PyPDF2
+import pandas as pd
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -138,7 +140,43 @@ async def verify_item(request: VerificationRequest):
         elif request.file_type and request.file_type.startswith("text/") and request.text_content:
             input_content = request.text_content
             input_type_desc = "text content"
-
+        elif request.file_type == "application/pdf" and request.media_data_url:
+            try:
+                header, encoded = request.media_data_url.split(",", 1)
+                pdf_data = base64.b64decode(encoded)
+                pdf_file = io.BytesIO(pdf_data)
+                reader = PyPDF2.PdfReader(pdf_file)
+                text = ""
+                for page_num in range(len(reader.pages)):
+                    text += reader.pages[page_num].extract_text() + "\n"
+                input_content = text
+                input_type_desc = "PDF document"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid PDF data: {e}")
+        elif request.file_type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"] and request.media_data_url:
+            try:
+                header, encoded = request.media_data_url.split(",", 1)
+                excel_data = base64.b64decode(encoded)
+                excel_file = io.BytesIO(excel_data)
+                df = pd.read_excel(excel_file, sheet_name=None) # Read all sheets
+                text = ""
+                for sheet_name, sheet_df in df.items():
+                    text += f"\n--- Sheet: {sheet_name} ---\n"
+                    text += sheet_df.to_string(index=False) + "\n"
+                input_content = text
+                input_type_desc = "spreadsheet document"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid Excel data: {e}")
+        elif request.file_type == "text/csv" and request.media_data_url:
+            try:
+                header, encoded = request.media_data_url.split(",", 1)
+                csv_data = base64.b64decode(encoded)
+                csv_file = io.BytesIO(csv_data)
+                df = pd.read_csv(csv_file)
+                input_content = df.to_string(index=False)
+                input_type_desc = "CSV document"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid CSV data: {e}")
         else:
             raise HTTPException(status_code=400, detail="No valid input data or file type provided.")
 
