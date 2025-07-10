@@ -5,4 +5,7 @@ joblib
 pydantic
 google-generativeai
 python-dotenv
-pillow
+Pillow
+PyPDF2
+pandas
+openpyxl
