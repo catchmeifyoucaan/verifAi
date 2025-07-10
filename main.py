@@ -10,6 +10,7 @@ from PIL import Image
 import json
 import PyPDF2
 import pandas as pd
+from fastapi.concurrency import run_in_threadpool
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -202,7 +203,7 @@ async def verify_item(request: VerificationRequest):
         )
 
         # Call Gemini API
-        response = gemini_model.generate_content(prompt_parts)
+        response = await run_in_threadpool(gemini_model.generate_content, prompt_parts)
         
         # Extract JSON from Gemini's response
         gemini_output = response.text.strip()
@@ -230,7 +231,7 @@ async def verify_item(request: VerificationRequest):
         print(f"[ERROR] Invalid Gemini response structure: {e}")
         raise HTTPException(status_code=500, detail="AI analysis returned unexpected data structure. Please try again.")
     except Exception as e:
-        print(f"[ERROR] An exception occurred during verification: {e}")
+        print(f"[ERROR] An unexpected error occurred: {type(e).__name__} - {e}")
         raise HTTPException(status_code=500, detail="An internal error occurred during AI analysis.")
 
 @app.get("/")
