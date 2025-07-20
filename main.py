@@ -1,4 +1,3 @@
-# FIX: Ensure all necessary imports are at the top of the file.
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
@@ -11,6 +10,8 @@ import json
 import PyPDF2
 import pandas as pd
 from fastapi.concurrency import run_in_threadpool
+import httpx # For making HTTP requests to microservices
+import uuid # For generating unique IDs
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -20,7 +21,10 @@ load_dotenv()
 app = FastAPI()
 
 # --- Add CORS Middleware ---
-origins = ["*"]
+origins = [
+    "http://localhost:3000",
+    "https://verifai-app.com",  # Replace with your production domain
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -43,18 +47,20 @@ class VerificationRequest(BaseModel):
     image_data_url: str | None = None
     media_data_url: str | None = None
     text_content: str | None = None
-    agent_id: str | None = None  # New field for selecting a specific agent
+    agent_id: str | None = None
 
 class VerificationResponse(BaseModel):
+    verification_id: str # Unique ID for this verification instance
     status: str
     title: str
     confidence: float
     summary: str
     details: list
-    explanation: str | None = None  # New field for anomaly explanation
-    remediation: str | None = None  # New field for suggested remediation
-    liveness_score: float | None = None # New field for liveness detection score
-    spoof_detection_result: str | None = None # New field for spoof detection result
+    explanation: str | None = None
+    remediation: str | None = None
+    liveness_score: float | None = None
+    spoof_detection_result: str | None = None
+    recommended_for_human_review: bool = False
 
 class FeedbackRequest(BaseModel):
     verification_id: str
@@ -103,10 +109,56 @@ AGENTS = {
             "Provide a detailed explanation of your reasoning, highlighting specific phrases or patterns. "
             "If you cannot determine authenticity, state why. "
         )
+    },
+    "pharmaceutical_authenticator": {
+        "description": "Specialized agent for authenticating pharmaceuticals.",
+        "prompt_template": (
+            "Analyze this {input_type} of a {object_class} (pharmaceutical product). "
+            "Focus on packaging, seals, batch numbers, expiry dates, holograms, and any visible security features. "
+            "Determine if it is an authentic product or a counterfeit. "
+            "Provide a detailed explanation of your findings and reasoning. "
+            "If you cannot determine authenticity, state why. "
+            "Crucially, highlight any potential health risks if deemed counterfeit or tampered. "
+            "Consider past verification results for similar items (if available for reinforcement learning)."
+        )
+    },
+    "drink_authenticator": {
+        "description": "Specialized agent for authenticating drinks, including alcohol and cognacs.",
+        "prompt_template": (
+            "Analyze this {input_type} of a {object_class} (drink/beverage). "
+            "Focus on bottle/can design, labels, seals, caps, liquid clarity, fill levels, and any unique identifiers. "
+            "Determine if it is an authentic product or a counterfeit. "
+            "Provide a detailed explanation of your findings and reasoning. "
+            "If you cannot determine authenticity, state why. "
+            "For alcoholic beverages, consider specific brand characteristics and regional authenticity markers. "
+            "Consider past verification results for similar items (if available for reinforcement learning)."
+        )
+    },
+    "food_authenticator": {
+        "description": "Specialized agent for authenticating food products.",
+        "prompt_template": (
+            "Analyze this {input_type} of a {object_class} (food product). "
+            "Focus on packaging integrity, seals, nutritional labels, expiry dates, ingredients list, and any visible signs of spoilage or tampering. "
+            "Determine if it is an authentic product, safe for consumption, or potentially counterfeit/compromised. "
+            "Provide a detailed explanation of your findings and reasoning. "
+            "If you cannot determine authenticity, state why. "
+            "Prioritize food safety and highlight any risks. "
+            "Consider past verification results for similar items (if available for reinforcement learning)."
+        )
+    },
+    "water_authenticator": {
+        "description": "Specialized agent for authenticating bottled water and other non-alcoholic beverages.",
+        "prompt_template": (
+            "Analyze this {input_type} of a {object_class} (bottled water or non-alcoholic beverage). "
+            "Focus on bottle design, cap seal, label authenticity, water clarity, and any unique identifiers. "
+            "Determine if it is an authentic product or a counterfeit. "
+            "Provide a detailed explanation of your findings and reasoning. "
+            "If you cannot determine authenticity, state why. "
+            "Highlight any signs of contamination or tampering. "
+            "Consider past verification results for similar items (if available for reinforcement learning)."
+        )
     }
 }
-
-
 
 # --- API Endpoint ---
 @app.post("/verify", response_model=VerificationResponse)
@@ -114,10 +166,9 @@ async def verify_item(request: VerificationRequest):
     print(f"--- Received API request for: {request.object_class} (Type: {request.file_type}, Agent: {request.agent_id}) ---")
 
     try:
-        # Determine which agent to use
         agent_id = request.agent_id if request.agent_id in AGENTS else "general_purpose"
         selected_agent = AGENTS[agent_id]
-        
+
         prompt_template = selected_agent["prompt_template"]
         
         prompt_parts = []
@@ -130,7 +181,7 @@ async def verify_item(request: VerificationRequest):
                 image_data = base64.b64decode(encoded)
                 input_content = Image.open(io.BytesIO(image_data))
                 input_type_desc = "image"
-            except Exception as e:
+            except (PIL.UnidentifiedImageError, IOError) as e:
                 raise HTTPException(status_code=400, detail=f"Invalid image data: {e}")
             
         elif request.file_type and (request.file_type.startswith("video/") or request.file_type.startswith("audio/")) and request.media_data_url:
@@ -154,8 +205,10 @@ async def verify_item(request: VerificationRequest):
                     text += reader.pages[page_num].extract_text() + "\n"
                 input_content = text
                 input_type_desc = "PDF document"
-            except Exception as e:
+            except PyPDF2.errors.PdfReadError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid PDF data: {e}")
+            except Exception as e: # Catch other potential errors during PDF processing
+                raise HTTPException(status_code=400, detail=f"Error processing PDF data: {e}")
         elif request.file_type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"] and request.media_data_url:
             try:
                 header, encoded = request.media_data_url.split(",", 1)
@@ -168,8 +221,10 @@ async def verify_item(request: VerificationRequest):
                     text += sheet_df.to_string(index=False) + "\n"
                 input_content = text
                 input_type_desc = "spreadsheet document"
-            except Exception as e:
+            except ValueError as e: # Catch errors related to pandas reading excel
                 raise HTTPException(status_code=400, detail=f"Invalid Excel data: {e}")
+            except Exception as e: # Catch other potential errors during Excel processing
+                raise HTTPException(status_code=400, detail=f"Error processing Excel data: {e}")
         elif request.file_type == "text/csv" and request.media_data_url:
             try:
                 header, encoded = request.media_data_url.split(",", 1)
@@ -178,8 +233,10 @@ async def verify_item(request: VerificationRequest):
                 df = pd.read_csv(csv_file)
                 input_content = df.to_string(index=False)
                 input_type_desc = "CSV document"
-            except Exception as e:
+            except (pd.errors.EmptyDataError, ValueError) as e: # Catch errors related to pandas reading csv
                 raise HTTPException(status_code=400, detail=f"Invalid CSV data: {e}")
+            except Exception as e: # Catch other potential errors during CSV processing
+                raise HTTPException(status_code=400, detail=f"Error processing CSV data: {e}")
         else:
             raise HTTPException(status_code=400, detail="No valid input data or file type provided.")
 
@@ -222,16 +279,26 @@ async def verify_item(request: VerificationRequest):
 
         print(f"--- Gemini verification successful. Status: {verification_result['status']} (Agent: {agent_id}) ---")
 
+        # Generate a unique verification ID
+        verification_id = str(uuid.uuid4())
+        verification_result["verification_id"] = verification_id
+
+        # Determine if human review is recommended
+        if verification_result["status"] in ["warning", "danger"] or verification_result["confidence"] < 70.0:
+            verification_result["recommended_for_human_review"] = True
+        else:
+            verification_result["recommended_for_human_review"] = False
+
         return VerificationResponse(**verification_result)
 
     except json.JSONDecodeError as e:
-        print(f"[ERROR] Gemini response was not valid JSON: {e}\nResponse: {gemini_output}")
+        print(f"[ERROR] Gateway - Gemini response was not valid JSON: {e}\nResponse: {gemini_output}")
         raise HTTPException(status_code=500, detail="AI analysis returned malformed data. Please try again.")
     except ValueError as e:
-        print(f"[ERROR] Invalid Gemini response structure: {e}")
+        print(f"[ERROR] Gateway - Invalid Gemini response structure: {e}")
         raise HTTPException(status_code=500, detail="AI analysis returned unexpected data structure. Please try again.")
     except Exception as e:
-        print(f"[ERROR] An unexpected error occurred: {type(e).__name__} - {e}")
+        print(f"[ERROR] Gateway - An unexpected error occurred: {type(e).__name__} - {e}")
         raise HTTPException(status_code=500, detail="An internal error occurred during AI analysis.")
 
 @app.get("/")
@@ -244,3 +311,7 @@ async def receive_feedback(feedback: FeedbackRequest):
     # In a real application, you would store this feedback in a database
     # and use it for model retraining or analysis.
     return {"message": "Feedback received successfully!"}
+
+@app.get("/agents")
+def get_agents():
+    return AGENTS
