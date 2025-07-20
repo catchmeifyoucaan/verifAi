@@ -23,7 +23,7 @@ app = FastAPI()
 # --- Add CORS Middleware ---
 origins = [
     "http://localhost:3000",
-    "https://verifai-app.com",  # Replace with your production domain
+    "https://verifai-c5763.web.app",  # Replace with your production domain
 ]
 app.add_middleware(
     CORSMiddleware,
