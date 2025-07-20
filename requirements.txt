@@ -9,3 +9,4 @@ Pillow
 PyPDF2
 pandas
 openpyxl
+httpx
